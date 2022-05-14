@@ -1,36 +1,3 @@
-!   This file is part of the program InvertTrishear
-!    Copyright (C) 2015-2021  David Oakley
-!
-!    This program is free software; you can redistribute it and/or modify
-!    it under the terms of the GNU General Public License as published by
-!    the Free Software Foundation; either version 2 of the License, or
-!    (at your option) any later version.
-!
-!    This program is distributed in the hope that it will be useful,
-!    but WITHOUT ANY WARRANTY; without even the implied warranty of
-!    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-!    GNU General Public License for more details.
-!
-!    You should have received a copy of the GNU General Public License along
-!    with this program; if not, see <http://www.gnu.org/licenses/> or write 
-!    to the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, 
-!    Boston, MA  02110-1301, USA..
-!
-!-----------------------------------------------------------------------------
-!   Invert Trishear implements methods described in:
-!    Oakley D.O.S. and Fisher, D.M, 2015, Inverse trishear modeling of bedding dip 
-!    data using Markov chain Monte Carlo methods, Journal of Structural Geology, 
-!    v. 80, p. 157-172.
-!
-!   David Oakley: david.o.oakley@uis.no
-!   
-!   If using this program in any academic or other publication, please acknowledge use of
-!   the program. (This is not required by the GPL license, but is requested.)
-!
-!   If you make any changes to this program, please make note of that fact in this header.
-!   (Prominent notice of changes is required by the terms of the GPL license).
-!
-
 module trishear_multibend
 !Trishear for a fault with multiple bends in it.
 !It is assumed that the higher segment must dip more steeply than the lower one (This might not always have to be true.)
@@ -521,6 +488,7 @@ double precision :: shear_angle !For inclined shear. 0 deg is horizontal. 90 deg
 double precision,dimension(nbends) :: axis_dips !Fold axis dips. (90 deg / pi/2 rad is vertical, 0 is horizontal.)
 double precision :: axis_dip !The dip of the current axis being dealt with in a loop that iterates through the axes / fault bends.
 double precision,dimension(2,nbends) :: bendxy !x,y coordinates of the fault bends. Numbered from highest = 1 to lowest = nbends.
+integer :: bend_start_adj !The bend at which the tip must start if bend_at_tipy == 1, adjusted to include P/S or phi change points as well as real bends.
 double precision :: y_tip_above !If tipy_above_bend == 1, then this number tells the elevation of the bend that the tip has to stay above.
 double precision,dimension(nsegs) :: R !Ratio of slip on a given segment relative to slip on the lowest segment.
 double precision,dimension(nsegs) :: slipseg !The amoung of slip with the tip in each segment. (Absolute value.) In the order that the tip moves through them.
@@ -555,6 +523,7 @@ do !This do loop lets us quickly exit anytime it turns out we have an impossible
         if (bend_at_tipy == 0) then
             bendxy(2,i) = params(3+nangles+i) !Again, numbered from top to bottom.
         else !Tip has to start at a bend.
+            bend_start_adj = bend_start !Initialize it. It may change later.
             if (i < bend_start) then
                 bendxy(2,i) = params(3+nangles+i)
             else if (i == bend_start) then
@@ -610,6 +579,11 @@ do !This do loop lets us quickly exit anytime it turns out we have an impossible
         call swap(ramp_angle_deg(i:i),ramp_angle_deg(n:n))
         call swap(phi_deg(i:i),phi_deg(n:n))
         call swap(PoverS(i:i),PoverS(n:n))
+        if (i==bend_start_adj) then
+            bend_start_adj = n !Since bends i and n got swapped, this index needs to change with them.
+        else if (n==bend_start_adj) then
+            bend_start_adj = i
+        end if
     end do
     !Fill in values that don't change at each bend.
     do i = 1,nsegs
@@ -771,11 +745,11 @@ do !This do loop lets us quickly exit anytime it turns out we have an impossible
             end do
         end if
     else
-        bendxy(1,bend_start) = tipx !Again, since TipToSolve==1 is required in order to have bend_at_tipy==1
-        do i = bend_start-1,1,-1
+        bendxy(1,bend_start_adj) = tipx !Again, since TipToSolve==1 is required in order to have bend_at_tipy==1
+        do i = bend_start_adj-1,1,-1
             bendxy(1,i) = bendxy(1,i+1)-(bendxy(2,i+1)-bendxy(2,i))/tan(ramp_angle(i+1))
         end do
-        do i = bend_start+1,nbends
+        do i = bend_start_adj+1,nbends
             bendxy(1,i) = bendxy(1,i-1)-(bendxy(2,i-1)-bendxy(2,i))/tan(ramp_angle(i))
         end do
     end if

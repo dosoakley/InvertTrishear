@@ -1,36 +1,3 @@
-!   This file is part of the program InvertTrishear
-!    Copyright (C) 2015-2021  David Oakley
-!
-!    This program is free software; you can redistribute it and/or modify
-!    it under the terms of the GNU General Public License as published by
-!    the Free Software Foundation; either version 2 of the License, or
-!    (at your option) any later version.
-!
-!    This program is distributed in the hope that it will be useful,
-!    but WITHOUT ANY WARRANTY; without even the implied warranty of
-!    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-!    GNU General Public License for more details.
-!
-!    You should have received a copy of the GNU General Public License along
-!    with this program; if not, see <http://www.gnu.org/licenses/> or write 
-!    to the Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor, 
-!    Boston, MA  02110-1301, USA..
-!
-!-----------------------------------------------------------------------------
-!   Invert Trishear implements methods described in:
-!    Oakley D.O.S. and Fisher, D.M, 2015, Inverse trishear modeling of bedding dip 
-!    data using Markov chain Monte Carlo methods, Journal of Structural Geology, 
-!    v. 80, p. 157-172.
-!
-!   David Oakley: david.o.oakley@uis.no
-!   
-!   If using this program in any academic or other publication, please acknowledge use of
-!   the program. (This is not required by the GPL license, but is requested.)
-!
-!   If you make any changes to this program, please make note of that fact in this header.
-!   (Prominent notice of changes is required by the terms of the GPL license).
-!
-
 module APT_Module
 !Adaptive parallel tempering metropolis algorithm.
 !This version uses OpenMP to run the different temperature levels in parallel.
@@ -40,6 +7,7 @@ double precision, dimension(:),allocatable :: init_model !For MCMC, if initial m
 integer :: nlevels !For APT algorithm, number of temperature levels to use.
 integer :: nsave !If greater than 1, only every nsave model results will be saved. This is a way to reduce
 integer :: nparams_total !The total number of parameters. When APT options is called, some parameters such as restored bed depths may not have been added into the nparams variable yet. This corrects for that omisison.
+integer :: allow_non_adjacent_swaps !Tells whether to allow swaps between non-adjacent temperature levels. (0 = no, 1= yes)
 
 contains
 
@@ -97,11 +65,23 @@ do
         exit
     end if
 end do
+print*,'Should swaps between non-adjacent temperature levels be allowed? (0=no / 1=yes)'
+if (options_id == 5) then !Manual input
+    read(options_id,*) allow_non_adjacent_swaps
+else
+    read(options_id,*) str
+    if (str == 'allow_non-adjacent_swaps') then
+        allow_non_adjacent_swaps = 1
+    else
+        allow_non_adjacent_swaps = 0
+        backspace(options_id)
+    end if
+end if
 end subroutine APT_options
 
 subroutine APT !Adaptive Parallel Tempering Algorithm of Miasojedow et al. (2013). Individual chains use the RAM algoirthm (Vihola 2011).
 use parameters, only: nparams,mins,maxs,steps,nmodels
-use math, only: randnormal,init_random_seed,chol
+use math, only: randnormal,init_random_seed,chol, swap
 use options, only: errs_id
 use choose_fault, only: choose_fault_model
 !$ use omp_lib, only: omp_get_num_threads,omp_get_thread_num
@@ -131,10 +111,8 @@ double precision,dimension(nlevels-1) :: rho !Vector of log differences between 
 double precision,dimension(:),allocatable :: mu_stand,sigma_stand !vector of mu and sigma for standard normal distribution
 real,dimension(nlevels) :: acc_count !Counts how many acceptances have been made
 real :: acc_count_sw = 0 !Count of how many swap acceptances have been made.
-double precision,dimension(nparams) :: params_l !parameters from level l for swapping
-double precision,dimension(:),allocatable :: x_l !x values from level l for swapping
 double precision :: lnp_l !ln of probability for level l for swapping
-integer :: l_swap !The level to swap with the one above it.
+integer :: l_swap1,l_swap2,l_swap_temp !The temperature levels to swap with each other.
 !Determine the variables that are actually variable
 do i = 1,nparams
     if (maxs(i) /= mins(i)) then
@@ -145,7 +123,6 @@ do i = 1,nparams
     end if
 end do
 allocate(x(ntosolve,nlevels),xnew(ntosolve,nlevels))
-allocate(x_l(ntosolve))
 allocate(U(ntosolve,1),jump(ntosolve,1))
 allocate(C(ntosolve,ntosolve,nlevels),S(ntosolve,ntosolve,nlevels))
 allocate(Ident(ntosolve,ntosolve))
@@ -266,19 +243,28 @@ do model = 1,nmodels
     !$omp end parallel
     !Swap states
     call random_number(randn)
-    l_swap = int(randn*(nlevels-1))+1 !Choose a level to propose swapping with the one above it.
-    pacc = min(1.,exp((beta(l_swap)-beta(l_swap+1))*(lnp(l_swap+1)-lnp(l_swap))))
+    if (allow_non_adjacent_swaps==0) then
+        l_swap1 = int(randn*(nlevels-1))+1 !Choose a level to propose swapping with the one above it.
+        l_swap2 = l_swap1+1
+    else
+        l_swap1 = int(randn*nlevels)+1
+        l_swap2 = int(randn*(nlevels-1))+1
+        if (l_swap2 >= l_swap1) l_swap2 = l_swap2+1 !This makes sure they aren't the same.
+        if (l_swap2 < l_swap1) then
+            !Switch them so that l_swap1 will always be the lower one.
+            l_swap_temp = l_swap2
+            l_swap1 = l_swap2
+            l_swap2 = l_swap_temp
+        end if
+    end if
+    pacc = min(1.,exp((beta(l_swap1)-beta(l_swap2))*(lnp(l_swap2)-lnp(l_swap1))))
     call random_number(randn)
     if (randn<pacc) then !Swap states and associated probabilities.
-        x_l = x(:,l_swap)
-        params_l = params(:,l_swap)
-        lnp_l = lnp(l_swap)
-        x(:,l_swap) = x(:,l_swap+1)
-        params(:,l_swap) = params(:,l_swap+1)
-        lnp(l_swap) = lnp(l_swap+1)
-        x(:,l_swap+1) = x_l
-        params(:,l_swap+1) = params_l
-        lnp(l_swap+1) = lnp_l
+        call swap(x(:,l_swap1),x(:,l_swap2))
+        call swap(params(:,l_swap1),params(:,l_swap2))
+        lnp_l = lnp(l_swap1) !The swap subroutine is only written for vector inputs right now, and lnp is a scalar, so I'm just doing the swap here.
+        lnp(l_swap1) = lnp(l_swap2)
+        lnp(l_swap2) = lnp_l
         acc_count_sw = acc_count_sw + 1
     end if
     !Adapt the temperature schedule
@@ -287,8 +273,12 @@ do model = 1,nmodels
     !   It's not the Pi_rho term in Eqn. 14 of their paper, because that gets multiplied by everything including the old rho. However, from the discussion of gamma in their
     !   paper, it sounds like gamma can have any positive constant in front of it. So maybe (nlevels-1) is their choice for that constant. In my models, however, I find that
     !   either it makes little difference or including the (nlevels-1) factor results in much worse mixing, depending on the model. So I'm leaving it out.
-    !rho(l_swap) = rho(l_swap) + (nlevels-1)*gamma*(pacc-pdes)
-    rho(l_swap) = rho(l_swap) + gamma*(pacc-pdes)
+    !rho(l_swap1) = rho(l_swap1) + (nlevels-1)*gamma*(pacc-pdes)
+    if (allow_non_adjacent_swaps==0) then
+        rho(l_swap1) = rho(l_swap1) + gamma*(pacc-pdes)
+    else
+        rho(l_swap1:l_swap2-1) = rho(l_swap1:l_swap2-1) + (1./(l_swap2-l_swap1))*gamma*(pacc-pdes) !Spread the update over all intervening rho values.
+    end if
     do j = 1,nlevels-1  !Calculate temp for the higher levels
         temp(j+1) = temp(j) + exp(rho(j))
     end do
